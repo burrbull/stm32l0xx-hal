@@ -292,21 +292,28 @@ pub struct Tx<USART> {
     _usart: PhantomData<USART>,
 }
 
+pub trait SerialExt<TX, RX>: Sized {
+    fn usart(
+        self,
+        tx: TX,
+        rx: RX,
+        config: Config,
+        rcc: &mut Rcc,
+    ) -> Result<Serial<Self>, InvalidConfig>;
+}
+
 macro_rules! usart {
     ($(
-        $USARTX:ident: ($usartX:ident, $SerialExt:ident),
+        $USARTX:ident: $usartX:ident,
     )+) => {
         $(
-            pub trait $SerialExt<TX, RX> {
-                fn usart(self, tx: TX, rx: RX, config: Config, rcc: &mut Rcc) -> Result<Serial<$USARTX>, InvalidConfig>;
-            }
 
-            impl<TX, RX> $SerialExt<TX, RX> for $USARTX
+            impl<TX, RX> SerialExt<TX, RX> for $USARTX
                 where
                     TX: TxPin<$USARTX>,
                     RX: RxPin<$USARTX>,
             {
-                fn usart(self, tx: TX, rx: RX, config: Config, rcc: &mut Rcc) -> Result<Serial<$USARTX>, InvalidConfig> {
+                fn usart(self, tx: TX, rx: RX, config: Config, rcc: &mut Rcc) -> Result<Serial<Self>, InvalidConfig> {
                     Serial::$usartX(self, tx, rx, config, rcc)
                 }
             }
@@ -713,21 +720,21 @@ macro_rules! usart {
     feature = "io-STM32L071",
 ))]
 usart! {
-    LPUART1: (lpuart1, Serial1LpExt),
-    USART2: (usart2, Serial2Ext),
+    LPUART1: lpuart1,
+    USART2: usart2,
 }
 
 // USART1 is available on category 3/5 MCUs
 #[cfg(any(feature = "io-STM32L051", feature = "io-STM32L071"))]
 usart! {
-    USART1: (usart1, Serial1Ext),
+    USART1: usart1,
 }
 
 // USART4 and USART5 are available on category 5 MCUs
 #[cfg(feature = "io-STM32L071")]
 usart! {
-    USART4: (usart4, Serial4Ext),
-    USART5: (usart5, Serial5Ext),
+    USART4: usart4,
+    USART5: usart5,
 }
 
 impl Serial<LPUART1> {
