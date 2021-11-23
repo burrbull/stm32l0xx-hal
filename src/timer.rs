@@ -1,7 +1,7 @@
 //! Timers
 use crate::hal::timer::{CountDown, Periodic};
 use crate::pac::{tim2, tim21, tim22, tim6, TIM2, TIM21, TIM22, TIM3, TIM6};
-use crate::rcc::{Clocks, Enable, Rcc, Reset};
+use crate::rcc::{BusTimerClock, Enable, Rcc, Reset};
 use cast::{u16, u32};
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m::peripheral::SYST;
@@ -16,7 +16,7 @@ pub trait TimerExt<TIM> {
 
 /// Hardware timers
 pub struct Timer<TIM> {
-    clocks: Clocks,
+    clk: Hertz,
     tim: TIM,
 }
 
@@ -29,7 +29,7 @@ impl Timer<SYST> {
         syst.set_clock_source(SystClkSource::Core);
         let mut timer = Timer {
             tim: syst,
-            clocks: rcc.clocks,
+            clk: rcc.clocks.sys_clk(),
         };
         timer.start(timeout);
         timer
@@ -53,7 +53,7 @@ impl CountDown for Timer<SYST> {
     where
         T: Into<Hertz>,
     {
-        let rvr = self.clocks.sys_clk().0 / timeout.into().0 - 1;
+        let rvr = self.clk.0 / timeout.into().0 - 1;
         assert!(rvr < (1 << 24));
 
         self.tim.set_reload(rvr);
@@ -82,7 +82,7 @@ impl TimerExt<SYST> for SYST {
 impl Periodic for Timer<SYST> {}
 
 /// Trait for general purpose timer peripherals
-pub trait GeneralPurposeTimer: Enable + Reset {
+pub trait GeneralPurposeTimer: Enable + Reset + BusTimerClock {
     type MasterMode;
 
     /// Selects the master mode for this timer
@@ -95,13 +95,13 @@ impl<T: GeneralPurposeTimer> Timer<T> {
         T::reset(rcc);
         Timer {
             tim,
-            clocks: rcc.clocks,
+            clk: T::timer_clock(&rcc.clocks),
         }
     }
 }
 
 macro_rules! timers {
-    ($($TIM:ident: ($tim:ident, $timclk:ident, $mms:ty),)+) => {
+    ($($TIM:ident: ($tim:ident, $mms:ty),)+) => {
         $(
             impl TimerExt<$TIM> for $TIM {
                 fn timer<T>(self, timeout: T, rcc: &mut Rcc) -> Timer<$TIM>
@@ -175,7 +175,7 @@ macro_rules! timers {
                     self.tim.cnt.reset();
 
                     let freq = timeout.into().0;
-                    let ticks = self.clocks.$timclk().0 / freq;
+                    let ticks = self.clk.0 / freq;
                     let psc = u16((ticks - 1) / (1 << 16)).unwrap();
                     self.tim.psc.write(|w| w.psc().bits(psc));
                     // This is only unsafe for some timers, so we need this to
@@ -335,11 +335,11 @@ macro_rules! linked_timers {
 }
 
 timers! {
-    TIM2: (tim2, apb1_tim_clk, tim2::cr2::MMS_A),
-    TIM3: (tim3, apb1_tim_clk, tim2::cr2::MMS_A),
-    TIM6: (tim6, apb1_tim_clk, tim6::cr2::MMS_A),
-    TIM21: (tim21, apb2_tim_clk, tim21::cr2::MMS_A),
-    TIM22: (tim22, apb2_tim_clk, tim22::cr2::MMS_A),
+    TIM2: (tim2, tim2::cr2::MMS_A),
+    TIM3: (tim3, tim2::cr2::MMS_A),
+    TIM6: (tim6, tim6::cr2::MMS_A),
+    TIM21: (tim21, tim21::cr2::MMS_A),
+    TIM22: (tim22, tim22::cr2::MMS_A),
 }
 
 linked_timers! {

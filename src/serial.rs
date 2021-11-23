@@ -8,7 +8,7 @@ use crate::gpio::{AltMode, PinMode};
 use crate::hal;
 use crate::hal::prelude::*;
 pub use crate::pac::{LPUART1, USART1, USART2, USART4, USART5};
-use crate::rcc::{Enable, Rcc, LSE};
+use crate::rcc::{BusClock, Enable, Rcc, LSE};
 use embedded_time::rate::{Baud, Extensions};
 
 #[cfg(any(feature = "stm32l0x2", feature = "stm32l0x3"))]
@@ -294,7 +294,7 @@ pub struct Tx<USART> {
 
 macro_rules! usart {
     ($(
-        $USARTX:ident: ($usartX:ident, $pclkX:ident, $SerialExt:ident),
+        $USARTX:ident: ($usartX:ident, $SerialExt:ident),
     )+) => {
         $(
             pub trait $SerialExt<TX, RX> {
@@ -330,7 +330,7 @@ macro_rules! usart {
                     <$USARTX>::enable(rcc);
 
                     // Calculate correct baudrate divisor on the fly
-                    let div = (rcc.clocks.$pclkX().0 * 25) / (4 * config.baudrate.0);
+                    let div = (<$USARTX as BusClock>::clock(&rcc.clocks).0 * 25) / (4 * config.baudrate.0);
                     let mantissa = div / 100;
                     let fraction = ((div - mantissa * 100) * 16 + 50) / 100;
                     let mut brr = mantissa << 4 | fraction;
@@ -713,21 +713,21 @@ macro_rules! usart {
     feature = "io-STM32L071",
 ))]
 usart! {
-    LPUART1: (lpuart1, apb1_clk, Serial1LpExt),
-    USART2: (usart2, apb1_clk, Serial2Ext),
+    LPUART1: (lpuart1, Serial1LpExt),
+    USART2: (usart2, Serial2Ext),
 }
 
 // USART1 is available on category 3/5 MCUs
 #[cfg(any(feature = "io-STM32L051", feature = "io-STM32L071"))]
 usart! {
-    USART1: (usart1, apb1_clk, Serial1Ext),
+    USART1: (usart1, Serial1Ext),
 }
 
 // USART4 and USART5 are available on category 5 MCUs
 #[cfg(feature = "io-STM32L071")]
 usart! {
-    USART4: (usart4, apb1_clk, Serial4Ext),
-    USART5: (usart5, apb1_clk, Serial5Ext),
+    USART4: (usart4, Serial4Ext),
+    USART5: (usart5, Serial5Ext),
 }
 
 impl Serial<LPUART1> {

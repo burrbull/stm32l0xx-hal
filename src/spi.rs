@@ -19,7 +19,7 @@ use crate::hal;
 use crate::pac::SPI1;
 #[cfg(any(feature = "stm32l0x2", feature = "stm32l0x3"))]
 use crate::pac::SPI2;
-use crate::rcc::{Enable, Rcc};
+use crate::rcc::{BusClock, Enable, Rcc};
 
 pub use hal::spi::{Mode, Phase, Polarity, MODE_0, MODE_1, MODE_2, MODE_3};
 
@@ -180,7 +180,7 @@ pub trait SpiExt<SPI>: Sized {
 }
 
 macro_rules! spi {
-    ($($SPIX:ident: ($spiX:ident, $pclkX:ident),)+) => {
+    ($($SPIX:ident: ($spiX:ident),)+) => {
         $(
             impl<PINS> Spi<$SPIX, PINS> {
                 pub fn $spiX<T>(
@@ -209,7 +209,7 @@ macro_rules! spi {
                     });
 
                     let spi_freq = freq.into().0;
-                    let apb_freq = rcc.clocks.$pclkX().0;
+                    let apb_freq = <$SPIX as BusClock>::clock(&rcc.clocks).0;
                     let br = match apb_freq / spi_freq {
                         0 => unreachable!(),
                         1..=2 => 0b000,
@@ -428,12 +428,12 @@ macro_rules! spi {
 }
 
 spi! {
-    SPI1: (spi1, apb2_clk),
+    SPI1: (spi1),
 }
 
 #[cfg(any(feature = "stm32l0x2", feature = "stm32l0x3"))]
 spi! {
-    SPI2: (spi2, apb1_clk),
+    SPI2: (spi2),
 }
 
 /// Token used for DMA transfers

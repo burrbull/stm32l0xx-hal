@@ -2,7 +2,7 @@ use crate::gpio::gpioa::{PA0, PA1, PA2, PA3};
 use crate::gpio::{AltMode, PinMode};
 use crate::hal;
 use crate::pac::{tim2, TIM2, TIM3};
-use crate::rcc::{Enable, Rcc, Reset};
+use crate::rcc::{BusTimerClock, Enable, Rcc, Reset};
 use cast::{u16, u32};
 use core::marker::PhantomData;
 use core::ops::Deref;
@@ -76,7 +76,7 @@ where
     pub fn set_frequency(&mut self, frequency: impl Into<Hertz>, rcc: &Rcc) {
         let frequency = frequency.into();
         self.stop();
-        let (psc, arr) = get_clock_config(frequency.0, I::clock_frequency(rcc));
+        let (psc, arr) = get_clock_config(frequency.0, I::timer_clock(&rcc.clocks).0);
         self.instance.psc.write(|w| w.psc().bits(psc));
         self.instance.arr.write(|w| w.arr().bits(arr));
         self.start();
@@ -95,16 +95,14 @@ fn get_clock_config(freq: u32, clk: u32) -> (u16, u16) {
     (psc, arr)
 }
 
-pub trait Instance: Deref<Target = tim2::RegisterBlock> + Enable + Reset {
+pub trait Instance: Deref<Target = tim2::RegisterBlock> + Enable + Reset + BusTimerClock {
     fn ptr() -> *const tim2::RegisterBlock;
-    fn clock_frequency(_: &Rcc) -> u32;
 }
 
 macro_rules! impl_instance {
     (
         $(
             $name:ty,
-            $apbX_clk:ident;
         )*
     ) => {
         $(
@@ -112,19 +110,12 @@ macro_rules! impl_instance {
                 fn ptr() -> *const tim2::RegisterBlock {
                     Self::ptr()
                 }
-
-                fn clock_frequency(rcc: &Rcc) -> u32 {
-                    rcc.clocks.$apbX_clk().0
-                }
             }
         )*
     }
 }
 
-impl_instance!(
-    TIM2, apb1_clk;
-    TIM3, apb1_clk;
-);
+impl_instance!(TIM2, TIM3,);
 
 pub trait Channel {
     fn disable(_: &tim2::RegisterBlock);
@@ -262,7 +253,7 @@ where
     /// **WARNING:**
     /// This changes the frequency for all channels associated with the PWM timer.
     pub fn set_frequency(&mut self, frequency: Hertz, rcc: &Rcc) {
-        let (psc, arr) = get_clock_config(frequency.0, I::clock_frequency(rcc));
+        let (psc, arr) = get_clock_config(frequency.0, I::timer_clock(&rcc.clocks).0);
         unsafe {
             (*I::ptr()).psc.write(|w| w.psc().bits(psc));
             (*I::ptr()).arr.write(|w| w.arr().bits(arr));

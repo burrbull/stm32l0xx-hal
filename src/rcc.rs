@@ -550,10 +550,42 @@ pub trait Reset: RccBus {
     unsafe fn reset_unchecked();
 }
 
+/// Frequency on bus that peripheral is connected in
+pub trait BusClock {
+    /// Calculates frequency depending on `Clock` state
+    fn clock(clocks: &Clocks) -> Hertz;
+}
+
+impl<T> BusClock for T
+where
+    T: RccBus,
+    T::Bus: BusClock,
+{
+    fn clock(clocks: &Clocks) -> Hertz {
+        T::Bus::clock(clocks)
+    }
+}
+
+/// Frequency on bus that timer is connected in
+pub trait BusTimerClock {
+    /// Calculates base frequency of timer depending on `Clock` state
+    fn timer_clock(clocks: &Clocks) -> Hertz;
+}
+
+impl<T> BusTimerClock for T
+where
+    T: RccBus,
+    T::Bus: BusTimerClock,
+{
+    fn timer_clock(clocks: &Clocks) -> Hertz {
+        T::Bus::timer_clock(clocks)
+    }
+}
+
 use crate::pac::rcc::{self, RegisterBlock as RccRB};
 
 macro_rules! bus_struct {
-    ($($busX:ident => ($EN:ident, $en:ident, $SMEN:ident, $smen:ident, $RST:ident, $rst:ident, $doc:literal),)+) => {
+    ($($busX:ident => ($EN:ident, $en:ident, $SMEN:ident, $smen:ident, $RST:ident, $rst:ident, $($clk:ident)?, $($tim_clk:ident)?, $doc:literal),)+) => {
         $(
             #[doc = $doc]
             pub struct $busX {
@@ -574,13 +606,29 @@ macro_rules! bus_struct {
                     &rcc.$rst
                 }
             }
+
+            $(
+                impl BusClock for $busX {
+                    fn clock(clocks: &Clocks) -> Hertz {
+                        clocks.$clk
+                    }
+                }
+            )?
+
+            $(
+                impl BusTimerClock for $busX {
+                    fn timer_clock(clocks: &Clocks) -> Hertz {
+                        clocks.$tim_clk
+                    }
+                }
+            )?
         )+
     };
 }
 
 bus_struct! {
-    AHB => (AHBENR, ahbenr, AHBSMENR, ahbsmenr, AHBRSTR, ahbrstr, "AMBA High-performance Bus (AHB) registers"),
-    APB1 => (APB1ENR, apb1enr, APB1SMENR, apb1smenr, APB1RSTR, apb1rstr, "Advanced Peripheral Bus 1 (APB1) registers"),
-    APB2 => (APB2ENR, apb2enr, APB2SMENR, apb2smenr, APB2RSTR, apb2rstr, "Advanced Peripheral Bus 2 (APB2) registers"),
-    IOP => (IOPENR, iopenr, IOPSMEN, iopsmen, IOPRSTR, ioprstr, "Input-Output Peripheral Bus (IOP) registers"),
+    AHB => (AHBENR, ahbenr, AHBSMENR, ahbsmenr, AHBRSTR, ahbrstr, ahb_clk, , "AMBA High-performance Bus (AHB) registers"),
+    APB1 => (APB1ENR, apb1enr, APB1SMENR, apb1smenr, APB1RSTR, apb1rstr, apb1_clk, apb1_tim_clk, "Advanced Peripheral Bus 1 (APB1) registers"),
+    APB2 => (APB2ENR, apb2enr, APB2SMENR, apb2smenr, APB2RSTR, apb2rstr, apb2_clk, apb2_tim_clk, "Advanced Peripheral Bus 2 (APB2) registers"),
+    IOP => (IOPENR, iopenr, IOPSMEN, iopsmen, IOPRSTR, ioprstr, , , "Input-Output Peripheral Bus (IOP) registers"),
 }
