@@ -172,6 +172,12 @@ pub struct Spi<SPI, PINS> {
     pins: PINS,
 }
 
+pub trait Instance:
+    core::ops::Deref<Target = crate::pac::spi1::RegisterBlock> + Enable + BusClock
+{
+    fn ptr() -> *const crate::pac::spi1::RegisterBlock;
+}
+
 pub trait SpiExt<SPI>: Sized {
     fn spi<PINS, T>(self, pins: PINS, mode: Mode, freq: T, rcc: &mut Rcc) -> Spi<SPI, PINS>
     where
@@ -179,262 +185,266 @@ pub trait SpiExt<SPI>: Sized {
         T: Into<Hertz>;
 }
 
-macro_rules! spi {
-    ($($SPIX:ident: ($spiX:ident),)+) => {
-        $(
-            impl<PINS> Spi<$SPIX, PINS> {
-                pub fn $spiX<T>(
-                    spi: $SPIX,
-                    pins: PINS,
-                    mode: Mode,
-                    freq: T,
-                    rcc: &mut Rcc
-                ) -> Self
-                where
-                PINS: Pins<$SPIX>,
-                T: Into<Hertz>
-                {
-                    pins.setup();
-
-                    // Enable clock for SPI
-                    <$SPIX>::enable(rcc);
-
-                    spi.cr2.write(|w| {
-                        // disable SS output
-                        w.ssoe().clear_bit();
-                        // enable DMA reception
-                        w.rxdmaen().set_bit();
-                        // enable DMA transmission
-                        w.txdmaen().set_bit()
-                    });
-
-                    let spi_freq = freq.into().0;
-                    let apb_freq = <$SPIX as BusClock>::clock(&rcc.clocks).0;
-                    let br = match apb_freq / spi_freq {
-                        0 => unreachable!(),
-                        1..=2 => 0b000,
-                        3..=5 => 0b001,
-                        6..=11 => 0b010,
-                        12..=23 => 0b011,
-                        24..=47 => 0b100,
-                        48..=95 => 0b101,
-                        96..=191 => 0b110,
-                        _ => 0b111,
-                    };
-
-                    // mstr: master configuration
-                    // lsbfirst: MSB first
-                    // ssm: enable software slave management (NSS pin free for other uses)
-                    // ssi: set nss high = master mode
-                    // dff: 8 bit frames
-                    // bidimode: 2-line unidirectional
-                    // spe: enable the SPI bus
-                    #[allow(unused)]
-                    spi.cr1.write(|w| unsafe {
-                        w.cpha()
-                            .bit(mode.phase == Phase::CaptureOnSecondTransition)
-                            .cpol()
-                            .bit(mode.polarity == Polarity::IdleHigh)
-                            .mstr()
-                            .set_bit()
-                            .br()
-                            .bits(br)
-                            .lsbfirst()
-                            .clear_bit()
-                            .ssm()
-                            .set_bit()
-                            .ssi()
-                            .set_bit()
-                            .rxonly()
-                            .clear_bit()
-                            .dff()
-                            .clear_bit()
-                            .bidimode()
-                            .clear_bit()
-                            .spe()
-                            .set_bit()
-                    });
-
-                    Spi { spi, pins }
-                }
-
-                pub fn free(self) -> ($SPIX, PINS) {
-                    (self.spi, self.pins)
-                }
-
-                pub fn read_all<Channel, Buffer>(
-                    self,
-                    dma:     &mut dma::Handle,
-                    channel: Channel,
-                    buffer:  Pin<Buffer>,
-                ) -> Transfer<Self, Rx<$SPIX>, Channel, Buffer, dma::Ready>
-                    where
-                        Rx<$SPIX>:      dma::Target<Channel>,
-                        Channel:        dma::Channel,
-                        Buffer:         DerefMut + 'static,
-                        Buffer::Target: AsMutSlice<Element=u8>,
-                {
-                    let num_words = buffer.len();
-                    self.read_some(dma, channel, buffer, num_words)
-                }
-
-                pub fn read_some<Channel, Buffer>(
-                    self,
-                    dma:     &mut dma::Handle,
-                    channel: Channel,
-                    buffer:  Pin<Buffer>,
-                    num_words: usize,
-                ) -> Transfer<Self, Rx<$SPIX>, Channel, Buffer, dma::Ready>
-                    where
-                        Rx<$SPIX>:      dma::Target<Channel>,
-                        Channel:        dma::Channel,
-                        Buffer:         DerefMut + 'static,
-                        Buffer::Target: AsMutSlice<Element=u8>,
-                {
-                    let token = Rx(PhantomData);
-                    let address = &unsafe { &*$SPIX::ptr() }.dr as *const _ as u32;
-                    // Safe, because the trait bounds of this method guarantee that the
-                    // buffer can be written to.
-                    let inner = unsafe {
-                        dma::Transfer::new(
-                            dma,
-                            token,
-                            channel,
-                            buffer,
-                            num_words,
-                            address,
-                            dma::Priority::high(),
-                            dma::Direction::peripheral_to_memory(),
-                            false,
-                        )
-                    };
-                    Transfer {
-                        target: self,
-                        inner,
-                    }
-                }
-
-                pub fn write_all<Channel, Buffer>(
-                    self,
-                    dma:     &mut dma::Handle,
-                    channel: Channel,
-                    buffer:  Pin<Buffer>,
-                ) -> Transfer<Self, Tx<$SPIX>, Channel, Buffer, dma::Ready>
-                    where
-                        Tx<$SPIX>:      dma::Target<Channel>,
-                        Channel:        dma::Channel,
-                        Buffer:         Deref + 'static,
-                        Buffer::Target: AsSlice<Element=u8>,
-                {
-                    let num_words = buffer.len();
-                    self.write_some(dma, channel, buffer, num_words)
-                }
-
-                pub fn write_some<Channel, Buffer>(
-                    self,
-                    dma:     &mut dma::Handle,
-                    channel: Channel,
-                    buffer:  Pin<Buffer>,
-                    num_words: usize,
-                ) -> Transfer<Self, Tx<$SPIX>, Channel, Buffer, dma::Ready>
-                    where
-                        Tx<$SPIX>:      dma::Target<Channel>,
-                        Channel:        dma::Channel,
-                        Buffer:         Deref + 'static,
-                        Buffer::Target: AsSlice<Element=u8>,
-                {
-                    let token = Tx(PhantomData);
-                    let address = &unsafe { &*$SPIX::ptr() }.dr as *const _ as u32;
-                    // Safe, because the trait bounds of this method guarantee that the
-                    // buffer can be written to.
-                    let inner = unsafe {
-                        dma::Transfer::new(
-                            dma,
-                            token,
-                            channel,
-                            buffer,
-                            num_words,
-                            address,
-                            dma::Priority::high(),
-                            dma::Direction::memory_to_peripheral(),
-                            false,
-                        )
-                    };
-                    Transfer {
-                        target: self,
-                        inner,
-                    }
-                }
-            }
-
-            impl SpiExt<$SPIX> for $SPIX {
-                fn spi<PINS, T>(self, pins: PINS, mode: Mode, freq: T, rcc: &mut Rcc) -> Spi<$SPIX, PINS>
-                where
-                    PINS: Pins<$SPIX>,
-                    T: Into<Hertz>
-                    {
-                        Spi::$spiX(self, pins, mode, freq, rcc)
-                    }
-            }
-
-            impl<PINS> hal::spi::FullDuplex<u8> for Spi<$SPIX, PINS> {
-                type Error = Error;
-
-                fn read(&mut self) -> nb::Result<u8, Error> {
-                    let sr = self.spi.sr.read();
-
-                    Err(if sr.ovr().bit_is_set() {
-                        nb::Error::Other(Error::Overrun)
-                    } else if sr.modf().bit_is_set() {
-                        nb::Error::Other(Error::ModeFault)
-                    } else if sr.crcerr().bit_is_set() {
-                        nb::Error::Other(Error::Crc)
-                    } else if sr.rxne().bit_is_set() {
-                        // NOTE(read_volatile) read only 1 byte (the svd2rust API only allows
-                        // reading a half-word)
-                        return Ok(unsafe {
-                            ptr::read_volatile(&self.spi.dr as *const _ as *const u8)
-                        });
-                    } else {
-                        nb::Error::WouldBlock
-                    })
-                }
-
-                fn send(&mut self, byte: u8) -> nb::Result<(), Error> {
-                    let sr = self.spi.sr.read();
-
-                    Err(if sr.ovr().bit_is_set() {
-                        nb::Error::Other(Error::Overrun)
-                    } else if sr.modf().bit_is_set() {
-                        nb::Error::Other(Error::ModeFault)
-                    } else if sr.crcerr().bit_is_set() {
-                        nb::Error::Other(Error::Crc)
-                    } else if sr.txe().bit_is_set() {
-                        // NOTE(write_volatile) see note above
-                        unsafe { ptr::write_volatile(&self.spi.dr as *const _ as *mut u8, byte) }
-                        return Ok(());
-                    } else {
-                        nb::Error::WouldBlock
-                    })
-                }
-
-            }
-
-            impl<PINS> crate::hal::blocking::spi::transfer::Default<u8> for Spi<$SPIX, PINS> {}
-
-            impl<PINS> crate::hal::blocking::spi::write::Default<u8> for Spi<$SPIX, PINS> {}
-        )+
+impl<SPI> SpiExt<SPI> for SPI
+where
+    SPI: Instance,
+{
+    fn spi<PINS, T>(self, pins: PINS, mode: Mode, freq: T, rcc: &mut Rcc) -> Spi<SPI, PINS>
+    where
+        PINS: Pins<SPI>,
+        T: Into<Hertz>,
+    {
+        Spi::new(self, pins, mode, freq, rcc)
     }
 }
 
-spi! {
-    SPI1: (spi1),
+impl<SPI: Instance, PINS> Spi<SPI, PINS> {
+    pub fn new<T>(spi: SPI, pins: PINS, mode: Mode, freq: T, rcc: &mut Rcc) -> Self
+    where
+        PINS: Pins<SPI>,
+        T: Into<Hertz>,
+    {
+        pins.setup();
+
+        // Enable clock for SPI
+        SPI::enable(rcc);
+
+        spi.cr2.write(|w| {
+            // disable SS output
+            w.ssoe().clear_bit();
+            // enable DMA reception
+            w.rxdmaen().set_bit();
+            // enable DMA transmission
+            w.txdmaen().set_bit()
+        });
+
+        let spi_freq = freq.into().0;
+        let apb_freq = SPI::clock(&rcc.clocks).0;
+        let br = match apb_freq / spi_freq {
+            0 => unreachable!(),
+            1..=2 => 0b000,
+            3..=5 => 0b001,
+            6..=11 => 0b010,
+            12..=23 => 0b011,
+            24..=47 => 0b100,
+            48..=95 => 0b101,
+            96..=191 => 0b110,
+            _ => 0b111,
+        };
+
+        // mstr: master configuration
+        // lsbfirst: MSB first
+        // ssm: enable software slave management (NSS pin free for other uses)
+        // ssi: set nss high = master mode
+        // dff: 8 bit frames
+        // bidimode: 2-line unidirectional
+        // spe: enable the SPI bus
+        #[allow(unused)]
+        spi.cr1.write(|w| unsafe {
+            w.cpha()
+                .bit(mode.phase == Phase::CaptureOnSecondTransition)
+                .cpol()
+                .bit(mode.polarity == Polarity::IdleHigh)
+                .mstr()
+                .set_bit()
+                .br()
+                .bits(br)
+                .lsbfirst()
+                .clear_bit()
+                .ssm()
+                .set_bit()
+                .ssi()
+                .set_bit()
+                .rxonly()
+                .clear_bit()
+                .dff()
+                .clear_bit()
+                .bidimode()
+                .clear_bit()
+                .spe()
+                .set_bit()
+        });
+
+        Spi { spi, pins }
+    }
+
+    pub fn free(self) -> (SPI, PINS) {
+        (self.spi, self.pins)
+    }
+
+    pub fn read_all<Channel, Buffer>(
+        self,
+        dma: &mut dma::Handle,
+        channel: Channel,
+        buffer: Pin<Buffer>,
+    ) -> Transfer<Self, Rx<SPI>, Channel, Buffer, dma::Ready>
+    where
+        Rx<SPI>: dma::Target<Channel>,
+        Channel: dma::Channel,
+        Buffer: DerefMut + 'static,
+        Buffer::Target: AsMutSlice<Element = u8>,
+    {
+        let num_words = buffer.len();
+        self.read_some(dma, channel, buffer, num_words)
+    }
+
+    pub fn read_some<Channel, Buffer>(
+        self,
+        dma: &mut dma::Handle,
+        channel: Channel,
+        buffer: Pin<Buffer>,
+        num_words: usize,
+    ) -> Transfer<Self, Rx<SPI>, Channel, Buffer, dma::Ready>
+    where
+        Rx<SPI>: dma::Target<Channel>,
+        Channel: dma::Channel,
+        Buffer: DerefMut + 'static,
+        Buffer::Target: AsMutSlice<Element = u8>,
+    {
+        let token = Rx(PhantomData);
+        let address = &unsafe { &*SPI::ptr() }.dr as *const _ as u32;
+        // Safe, because the trait bounds of this method guarantee that the
+        // buffer can be written to.
+        let inner = unsafe {
+            dma::Transfer::new(
+                dma,
+                token,
+                channel,
+                buffer,
+                num_words,
+                address,
+                dma::Priority::high(),
+                dma::Direction::peripheral_to_memory(),
+                false,
+            )
+        };
+        Transfer {
+            target: self,
+            inner,
+        }
+    }
+
+    pub fn write_all<Channel, Buffer>(
+        self,
+        dma: &mut dma::Handle,
+        channel: Channel,
+        buffer: Pin<Buffer>,
+    ) -> Transfer<Self, Tx<SPI>, Channel, Buffer, dma::Ready>
+    where
+        Tx<SPI>: dma::Target<Channel>,
+        Channel: dma::Channel,
+        Buffer: Deref + 'static,
+        Buffer::Target: AsSlice<Element = u8>,
+    {
+        let num_words = buffer.len();
+        self.write_some(dma, channel, buffer, num_words)
+    }
+
+    pub fn write_some<Channel, Buffer>(
+        self,
+        dma: &mut dma::Handle,
+        channel: Channel,
+        buffer: Pin<Buffer>,
+        num_words: usize,
+    ) -> Transfer<Self, Tx<SPI>, Channel, Buffer, dma::Ready>
+    where
+        Tx<SPI>: dma::Target<Channel>,
+        Channel: dma::Channel,
+        Buffer: Deref + 'static,
+        Buffer::Target: AsSlice<Element = u8>,
+    {
+        let token = Tx(PhantomData);
+        let address = &unsafe { &*SPI::ptr() }.dr as *const _ as u32;
+        // Safe, because the trait bounds of this method guarantee that the
+        // buffer can be written to.
+        let inner = unsafe {
+            dma::Transfer::new(
+                dma,
+                token,
+                channel,
+                buffer,
+                num_words,
+                address,
+                dma::Priority::high(),
+                dma::Direction::memory_to_peripheral(),
+                false,
+            )
+        };
+        Transfer {
+            target: self,
+            inner,
+        }
+    }
 }
 
-#[cfg(any(feature = "stm32l0x2", feature = "stm32l0x3"))]
-spi! {
-    SPI2: (spi2),
+impl<SPI: Instance, PINS> hal::spi::FullDuplex<u8> for Spi<SPI, PINS> {
+    type Error = Error;
+
+    fn read(&mut self) -> nb::Result<u8, Error> {
+        let sr = self.spi.sr.read();
+
+        Err(if sr.ovr().bit_is_set() {
+            nb::Error::Other(Error::Overrun)
+        } else if sr.modf().bit_is_set() {
+            nb::Error::Other(Error::ModeFault)
+        } else if sr.crcerr().bit_is_set() {
+            nb::Error::Other(Error::Crc)
+        } else if sr.rxne().bit_is_set() {
+            // NOTE(read_volatile) read only 1 byte (the svd2rust API only allows
+            // reading a half-word)
+            return Ok(unsafe { ptr::read_volatile(&self.spi.dr as *const _ as *const u8) });
+        } else {
+            nb::Error::WouldBlock
+        })
+    }
+
+    fn send(&mut self, byte: u8) -> nb::Result<(), Error> {
+        let sr = self.spi.sr.read();
+
+        Err(if sr.ovr().bit_is_set() {
+            nb::Error::Other(Error::Overrun)
+        } else if sr.modf().bit_is_set() {
+            nb::Error::Other(Error::ModeFault)
+        } else if sr.crcerr().bit_is_set() {
+            nb::Error::Other(Error::Crc)
+        } else if sr.txe().bit_is_set() {
+            // NOTE(write_volatile) see note above
+            unsafe { ptr::write_volatile(&self.spi.dr as *const _ as *mut u8, byte) }
+            return Ok(());
+        } else {
+            nb::Error::WouldBlock
+        })
+    }
 }
+
+impl<SPI: Instance, PINS> crate::hal::blocking::spi::transfer::Default<u8> for Spi<SPI, PINS> {}
+
+impl<SPI: Instance, PINS> crate::hal::blocking::spi::write::Default<u8> for Spi<SPI, PINS> {}
+
+macro_rules! spi {
+    ($SPIX:ident: $spiX:ident) => {
+        impl Instance for $SPIX {
+            fn ptr() -> *const crate::pac::spi1::RegisterBlock {
+                $SPIX::ptr()
+            }
+        }
+
+        impl<PINS> Spi<$SPIX, PINS> {
+            pub fn $spiX<T>(spi: $SPIX, pins: PINS, mode: Mode, freq: T, rcc: &mut Rcc) -> Self
+            where
+                PINS: Pins<$SPIX>,
+                T: Into<Hertz>,
+            {
+                Self::new(spi, pins, mode, freq, rcc)
+            }
+        }
+    };
+}
+
+spi! { SPI1: spi1 }
+
+#[cfg(any(feature = "stm32l0x2", feature = "stm32l0x3"))]
+spi! { SPI2: spi2 }
 
 /// Token used for DMA transfers
 ///
